@@ -11,7 +11,7 @@ To test your setup, run the following
 
     python align_multiple_networks.py toy_problem/edgefile toy_problem/similarityfile -m prognatalie++ -o toy_problem/output.txt
 
-and compare the output to toy_problem/output_EXPECTED.txt.
+and compare the generated output (toy_problem/output.txt) to the expected output (toy_problem/output_EXPECTED.txt).
 
 ## Usage (command line)
 
