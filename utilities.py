@@ -8,10 +8,14 @@ import os
 import cPickle as pickle
 
 
-def save_data(data, title='saved_data', date=None):
+def save_data(data, title='saved_data', date=None, dir_name=None):
     date_part = get_date_str(date)
-    fname = os.path.join("experiment_results", "{}_{}.pckl".format(title,
-                                                                   date_part))
+    dir_path = 'experiment_results'
+    if dir_name is not None:
+        dir_path = os.path.join(dir_path, dir_name)
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
+    fname = os.path.join(dir_path, "{}_{}.pckl".format(title, date_part))
     pickle.dump(data, open(fname, 'wb'))
     print "Wrote the results to: {}".format(fname)
     return fname
@@ -24,42 +28,6 @@ def get_date_str(date=None):
     date_part = re.sub(' ', '_', date_part)
     date_part = re.sub(':', '', date_part)
     return date_part
-
-
-def cost(assignment, P):
-    t0 = time.time()
-    X, x = assignment.construct_Xx()
-    sum_y = assignment.count_opened_entities()
-    unary_sum = (P.D.multiply(X)).sum()
-    if P.AA.shape[0] == x.shape[0]:
-        binary_sum = P.g * (x.T.dot(P.AA).dot(x))[0, 0] / 2.0
-    elif P.A.shape[0] == X.shape[0]:
-        qterm = P.A.dot(X).dot(P.A).tolil()
-        qterm = qterm.reshape((x.shape[0], 1))
-        binary_sum = P.g * (x.T.dot(qterm))[0, 0] / 2.0
-    else:
-        assert 1==0
-    print P.f, sum_y, unary_sum, -binary_sum
-    c = P.f*sum_y + unary_sum - binary_sum
-    print "Cost took %f seconds." % (time.time()-t0)
-    return c
-
-
-def cost_BROKEN(assignment, P):
-    t0 = time.time()
-    X, x = assignment.construct_Xx()
-    print "Xx", X.shape, x.shape
-    sum_y = assignment.count_opened_entities()
-    unary_sum = (P.D.multiply(X)).sum()
-    assert P.A.shape[0] == X.shape[0]
-    qterm = P.A.dot(X).dot(P.A).tolil()
-    print x.shape, qterm.shape
-    qterm = qterm.reshape((x.shape[0], 1))
-    binary_sum = P.g * (x.T.dot(qterm))[0, 0] / 2.0
-    print P.f, sum_y, unary_sum, -binary_sum
-    c = P.f*sum_y + unary_sum - binary_sum
-    print "Cost took %f seconds." % (time.time()-t0)
-    return c
 
 
 def delta_cost(item, dst_clust, assignment, P):
@@ -79,8 +47,9 @@ def delta_cost(item, dst_clust, assignment, P):
     # Binary costs
     for neigh in P.adj_list[item]:
         neigh_clust = assignment.matches[neigh]
-        assert P.A[item, neigh] == 1, "Non-neighbor in neighbor list"
-        c -= P.g * (P.A[dst_clust, neigh_clust] - P.A[cur_clust, neigh_clust])
+        assert P.A.get(item, neigh) == 1, "Non-neighbor in neighbor list"
+        c -= P.g * (P.A.get(dst_clust, neigh_clust) -
+                    P.A.get(cur_clust, neigh_clust))
     return c
 
 
@@ -110,9 +79,22 @@ def delta_cost2(item, dst_clust, assignment, P):
             c += P.g
         if other in P.adj_list[item]:
             # Two neighs mapped to non-neighs OR neighs
-            c += P.g * (P.A[cur_clust, other_clust] -
-                        P.A[dst_clust, other_clust])
-        elif P.A[dst_clust, other_clust]:
+            c += P.g * (P.A.get(cur_clust, other_clust) -
+                        P.A.get(dst_clust, other_clust))
+        elif P.A.get(dst_clust, other_clust):
             # Two non-neighs (from the same input graph) mapped to neighs
             c += 0  #P.g# / 5.0
     return c
+
+
+def write_problem_to_file(Gs, sim_tups, e_fname, s_fname):
+    with open(e_fname, 'w') as fe:
+        for gidx, G in enumerate(Gs):
+            for u, v in G.edges():
+                fe.write("G{} {} {}\n".format(gidx, u, v))
+        print "Wrote edges to:", e_fname
+
+    with open(s_fname, 'w') as fs:
+        for tup in sim_tups:
+            fs.write("G{} {} G{} {} {}\n".format(*tup))
+        print "Wrote candidate matches to:", s_fname

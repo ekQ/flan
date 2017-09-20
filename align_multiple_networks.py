@@ -6,20 +6,22 @@ import random
 import time
 from scipy import sparse
 import networkx as nx
+import argparse
 
 import variables
 from assignment import Assignment
 from baselines import agglomerative as aggl
 from baselines import icm
-from baselines import progressive_multiple_alignment as prog
+from baselines import isorankn
+from baselines import random_alignment as randa
 from lagrangian_relaxation import flan as LD
 from lagrangian_relaxation import natalie as mklau
 
 
-def align_multiple_networks(Gs, cost_params, similarity_tuples=None,
-                            method="LD", max_iters=100,
-                            max_algorithm_iterations=1, max_entities=None,
-                            shuffle=False, self_discount=True):
+def align_multiple_networks(
+        Gs, cost_params, similarity_tuples=None, method="LD", max_iters=100,
+        max_algorithm_iterations=1, max_entities=None, shuffle=False,
+        self_discount=True, do_evaluate=True, u_w=None):
     """
     Compute the best alignment for the given networks. You should either provide
     argument 'similarity_tuples' or otherwise the graph nodes should have the
@@ -31,8 +33,7 @@ def align_multiple_networks(Gs, cost_params, similarity_tuples=None,
 
     Input:
         Gs -- list of NetworkX input graphs
-        cost_params -- dict specifying adjacency matrix 'A', cost 'f', discount
-                       'g', and cost 'gap_cost'
+        cost_params -- dict specifying cost 'f', discount 'g', and 'gap_cost'
         similarity_tuples -- (OPTIONAL) list of tuples for candidate matches:
                                         (graph1_index, node1, graph2_index,
                                          node2, similarity)
@@ -44,9 +45,12 @@ def align_multiple_networks(Gs, cost_params, similarity_tuples=None,
         matched indices for each object
         score
     """
+    gao = range(len(Gs))
+    if method == 'isorankn':
+        gao = None
     A, B, similarities, GG, groundtruth, graph2nodes, old2new_label = \
-        construct_A_and_sims(Gs, similarity_tuples, graph_alignment_order=
-                             range(len(Gs)), shuffle_node_labels=shuffle)
+        construct_A_and_sims(Gs, similarity_tuples, graph_alignment_order=gao,
+                             shuffle_node_labels=shuffle)
     n = A.shape[0]
     # Initialize objects to themselves
     matches = []
@@ -57,7 +61,7 @@ def align_multiple_networks(Gs, cost_params, similarity_tuples=None,
         assert len(cms) > 0, "Each node should have at least 1 candidate " + \
                              "match, node {} has zero.".format(i)
         candidate_matches.append(cms)
-        matches.append(cms[random.randint(0,len(cms)-1)])
+        matches.append(cms[random.randint(0, len(cms)-1)])
         n_xij += len(cms)
     print "Total number of xij's:", n_xij
     asg = Assignment(n, matches, candidate_matches)
@@ -77,15 +81,10 @@ def align_multiple_networks(Gs, cost_params, similarity_tuples=None,
     P = variables.Problem(f, D, g, gap_cost, n, A, candidate_matches,
                           graph2nodes, B=B, self_discount=self_discount,
                           max_entities=max_entities)
-    # NOTE This function call is only needed for computing groundtruth score
-    # but it could be optimized away
-    P.construct_AA(asg.x_start_idxs, asg.candidate_matches_dicts, asg.xlen)
 
     # Groundtruth cost
     if groundtruth is not None:
-        gt_c = compute_score(P, groundtruth, False)
         gt_c_pay = compute_score(P, groundtruth, True)
-        print "Groundtruth score (f=0):", gt_c
         print "Groundtruth score (f={}): {}".format(P.f, gt_c_pay)
 
     other = {"iterations": -1, "cost": 0, "lb": -1, "ub": -1}
@@ -104,12 +103,14 @@ def align_multiple_networks(Gs, cost_params, similarity_tuples=None,
         else:
             update_edges = False
             sub_method = method[4:]
+        # Import prog only here to avoid problems with circular imports
+        from baselines import progressive_multiple_alignment as prog
         results, master_G = prog.progressive_multiple_alignment(
             Gs, cost_params, similarity_tuples, sub_method, max_iters,
             max_algorithm_iterations, max_entities, shuffle, self_discount,
-            update_edges)
+            do_evaluate, update_edges)
         GG = master_G
-    elif method in ("LD", "FLAN"):
+    elif method in ("LD", "flan"):
         results = LD.LD_algorithm(P, max_iters, max_algorithm_iterations)
     elif method == "binB-LD":
         results = LD.LD_algorithm(P, max_iters, max_algorithm_iterations,
@@ -119,8 +120,12 @@ def align_multiple_networks(Gs, cost_params, similarity_tuples=None,
                                   cluster=True)
     elif method == "LDunary":
         results = LD.LD_algorithm(P, use_binary=False)
-    elif method in ("Klau", "mKlau", "Natalie"):
-        results = mklau.klaus_algorithm(P, max_iters)
+    elif method in ("Klau", "mKlau", "natalie"):
+        results = mklau.klaus_algorithm(P, max_iters, u_w=u_w)
+    elif method == 'isorankn':
+        results = isorankn.align_isorankn(P)
+    elif method == 'rand':
+        results = randa.align_randomly(P)
     else:
         print "Unknown method:", method
         raise Exception("Unknown method")
@@ -136,24 +141,21 @@ def align_multiple_networks(Gs, cost_params, similarity_tuples=None,
     else:
         prev_xs = [x]
 
-    x_c = compute_score(P, x, False)
-    x_c_pay = compute_score(P, x, True)
-    print "best_x score (f=0):", x_c
-    print "best_x score (f={}): {}".format(P.f, x_c_pay)
-
     if shuffle:
         # Deshuffle the results
         x, GG, graph2nodes, prev_xs = deshuffle(
             old2new_label, x, GG, graph2nodes, prev_xs)
 
-    other['prev_scores'] = []
-    print
-    for ai, x in enumerate(prev_xs):
-        precision, recall, fscore = evaluate_alignment_fast(x, GG)
-        other['prev_scores'].append((precision, recall, fscore))
-        print "Algorithm iteration {}: p={:.3f}, r={:.3f}, f1={:.3f}\n".format(
-                ai, precision, recall, fscore)
-    other['scores'] = other['prev_scores'][-1]
+    if do_evaluate:
+        other['prev_scores'] = []
+        print
+        for ai, x in enumerate(prev_xs):
+            precision, recall, fscore = evaluate_alignment_fast(x, GG)
+            other['prev_scores'].append((precision, recall, fscore))
+            print "Algorithm iteration {}: p={:.3f}, r={:.3f}, f1={:.3f}\n".format(
+                    ai, precision, recall, fscore)
+        other['scores'] = other['prev_scores'][-1]
+        #write_alignment_results(x, GG, 'output_clusters2.txt')
     other['G'] = GG
     other['graph2nodes'] = graph2nodes
     other['n_clusters'] = len(asg.get_clusters())
@@ -208,8 +210,8 @@ def construct_A_and_sims(Gs, similarity_tuples=None, graph_alignment_order=None,
             graph2nodes[graph] = [renamed_labels[i] for i in nodes]
         for key, old_idx in node2idx.iteritems():
             node2idx[key] = renamed_labels[old_idx]
-    A = nx.to_scipy_sparse_matrix(fullG, weight=None)
-    B = nx.to_scipy_sparse_matrix(fullG, weight='weight')
+    A = nx.to_scipy_sparse_matrix(fullG, weight=None, format='dok')
+    B = nx.to_scipy_sparse_matrix(fullG, weight='weight', format='dok')
     #print "\n\nDiff elements:", (B-A).sum()
     #print "Max B element:", B.max()
 
@@ -281,7 +283,6 @@ def deshuffle(old2new_label, x, G, graph2nodes, prev_xs=None):
     new_x = [None] * len(x)
     for xi, val in enumerate(x):
         new_x[new2old_label[xi]] = new2old_label[val]
-        #new_x[xi] = new2old_label[val]
     new_prev_xs = None
     if prev_xs is not None:
         new_prev_xs = []
@@ -359,13 +360,14 @@ def compute_score(P, x, pay4entities):
     unary_score = 0
     binary_score = 0
     for i, j in enumerate(x):
-        score += P.D[i,j]
-        unary_score += P.D[i,j]
+        score += P.D[i, j]
+        unary_score += P.D[i, j]
         for k in P.adj_list[i]:
             l = x[k]
-            if P.B[j,l]:
-                score -= P.B[j,l] * P.g / 2.0
-                binary_score -= P.B[j,l] * P.g / 2.0
+            Bjl = P.B.get(j, l)
+            if Bjl:
+                score -= Bjl * P.g / 2.0
+                binary_score -= Bjl * P.g / 2.0
     print "    F:   {} opened entities, {} unary, {} binary, score {}.".format(
         n_opened, unary_score, binary_score, score)
     return score
@@ -389,5 +391,158 @@ def test():
     print x
     print oth['min_cost']
 
+
+def write_alignment_results(x, master_G, output):
+    clusters = {}
+    for xi, val in enumerate(x):
+        if val not in clusters:
+            clusters[val] = []
+        clusters[val].append((master_G.node[xi]['subgraph'],
+                              master_G.node[xi]['id']))
+
+    lines = []
+    for clust in clusters.itervalues():
+        clust = sorted(["{}_{}".format(*c) for c in clust])
+        lines.append("{}\n".format(" ".join(clust)))
+    lines = sorted(lines)
+    with open(output, 'w') as fout:
+        for line in lines:
+            fout.write(line)
+    print "\nWrote the alignment to:", output
+
+
+def read_problem_files(edgefile, similarityfile):
+    """
+    Read alignment problem instance from files and construct suitable data
+    structures.
+
+    Input:
+        edgefile --  Path to file containing edges of all the input graphs
+        similarityfile -- Path to file containing candidate matches and
+                          similarities of vertices
+
+    Output:
+        Gs -- list of (networkx) input graphs
+        similarity_tuples
+    """
+    Gd = {}
+    fe = open(edgefile, 'r')
+    for line in fe:
+        parts = line.strip().split()
+        if len(parts) < 3 or len(parts) > 4:
+            print "Malformed line:\n{}".format(line)
+            continue
+        gid = parts[0]
+        if gid not in Gd:
+            Gd[gid] = nx.Graph()
+        u = parts[1]
+        v = parts[2]
+        if not Gd[gid].has_node(u):
+            Gd[gid].add_node(u, id=u, subgraph=gid)
+        if not Gd[gid].has_node(v):
+            Gd[gid].add_node(v, id=v, subgraph=gid)
+        if len(parts) == 3:
+            weight = 1
+        else:
+            weight = float(parts[3])
+        Gd[gid].add_edge(u, v, weight=weight)
+    fe.close()
+
+    tups = []
+    fs = open(similarityfile, 'r')
+    for line in fs:
+        parts = line.strip().split()
+        if len(parts) != 5:
+            print "Malformed sf line:\n{}".format(line)
+            continue
+        gid1 = parts[0]
+        u1 = parts[1]
+        gid2 = parts[2]
+        u2 = parts[3]
+        sim = float(parts[4])
+        if gid1 not in Gd:
+            Gd[gid1] = nx.Graph()
+        if gid2 not in Gd:
+            Gd[gid2] = nx.Graph()
+        Gd[gid1].add_node(u1, id=u1, subgraph=gid1)
+        Gd[gid2].add_node(u2, id=u2, subgraph=gid2)
+        tups.append((gid1, u1, gid2, u2, sim))
+    fs.close()
+
+    # Order input graphs and assign index number to each
+    Gi = sorted(Gd.items())
+    print "\nThe number of input graphs is: {}".format(len(Gi))
+    print "The number of nodes per graph:"
+    for gid, G in Gi:
+        print "\tGraph {}: {}".format(gid, len(G))
+    print
+    gids, Gs = zip(*Gi)
+    Gmap = {gid: i for i, gid in enumerate(gids)}
+    new_tups = []
+    for gid1, u1, gid2, u2, sim in tups:
+        new_tups.append((Gmap[gid1], u1, Gmap[gid2], u2, sim))
+    return Gs, new_tups
+
+
+def main():
+    random.seed(14564356)
+    np.random.seed(145654)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("edgefile", help=
+        """
+        Path to file containing the edges of the input graphs. One row
+        contains one edge with the format: "graphID edgeID1 edgeID2 (weight)",
+        where edge weight is optional (1 by default). NOTE: currently edge
+        weights are NOT supported.
+        """
+    )
+    parser.add_argument("similarityfile", help=
+        """
+        Path to file containing the candidate matches for vertices and the
+        associated similarity values. One row contains one candidate match of
+        a node:
+            "graphID1 nodeID1 graphID2 nodeID2 similarity".
+        Note that these matches are directed (add nodeID2 -> nodeID1
+        separately) if you want. Also note that a node can be matched with
+        only the nodes specified in this file so typically you want to add
+        at least the option to map to itself ("graphID1 nodeID1 graphID1
+        nodeID1 1").
+        """
+    )
+    method_map = {"flan": "LD", "flan0": "LD", "cflan": "LD",
+                  "prognatalie": "progmKlau", "prognatalie++": "upProgmKlau",
+                  "natalie": "mKlau", "icm": "ICM", "isorankn": "isorankn"}
+    parser.add_argument("-m", "--method", default="flan",
+                        choices=sorted(method_map.keys()), help=
+                        "Alignment method. Default: flan")
+    parser.add_argument("-f", type=float, default=1, help=(
+        "Cost of opening an entity. A larger value results in fewer clusters. "
+        "Default: 1"))
+    parser.add_argument("-g", type=float, default=0.5, help=(
+        "Discount for mapping neighbors to neighbors. Default: 0.5"))
+    parser.add_argument("-e", "--entities", type=int, help=(
+        "Number of entities (must be specified when cFLAN is used"))
+    parser.add_argument("-i", "--iterations", type=int, default=300, help=
+        "Number of iteration the Lagrange multipliers are solved. Default: 300")
+    parser.add_argument("-o", "--output", default="output_clusters.txt", help=(
+        "Output filename. Each line of the output contains a list of "
+        "graphID_nodeID pairs aligned to the same cluster. Default: "
+        "output_clusters.txt"))
+    args = parser.parse_args()
+    Gs, similarity_tuples = read_problem_files(args.edgefile,
+                                               args.similarityfile)
+    method = method_map[args.method]
+    mai = 1
+    if args.method in ("flan", "cflan"):
+        mai = 5
+    cost_params = {"f": args.f, "g": args.g, "gap_cost": args.f}
+    max_entities = args.entities
+    max_iters = args.iterations
+    x, other = align_multiple_networks(Gs, cost_params, similarity_tuples,
+                                       method, max_iters, mai, max_entities,
+                                       shuffle=True, self_discount=True,
+                                       do_evaluate=False)
+    write_alignment_results(x, other['G'], args.output)
+
 if __name__ == "__main__":
-    test()
+    main()

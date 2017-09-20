@@ -3,7 +3,7 @@ FLAN method for aligning multiple networks.
 """
 import numpy as np
 import time
-from scipy.optimize import linear_sum_assignment
+from min_cost_matching import min_cost_matching
 from scipy import sparse
 import variables
 import feasibility_heuristics as heuristics
@@ -68,14 +68,18 @@ def update_B(P, x, binary_B):
     Output:
         a new problem object with an updated B
     """
-    new_B = sparse.dok_matrix(P.B.shape, dtype=np.int)
+    #new_B = sparse.dok_matrix(P.B.shape, dtype=np.int)
+    if binary_B:
+        new_B = P.A.copy()
+    else:
+        new_B = variables.AdjacencyMatrix(sparse.dok_matrix(P.B.shape))
     for i, j in enumerate(x):
         for k in P.adj_list[i]:
             l = x[k]
             if binary_B:
-                new_B[j, l] = 1
+                new_B.set(j, l, 1)
             else:
-                new_B[j, l] += 1
+                new_B.set(j, l, new_B.get(j, l) + 1)
     new_P = variables.Problem(
         P.f, P.D, P.g, P.gap_cost, P.N, P.A, P.candidate_matches,
         P.graph2nodes, P.groundtruth, B=new_B, self_discount=P.self_discount,
@@ -251,21 +255,26 @@ def compute_score(P, x, use_binary=True):
     unary_score = 0
     binary_score = 0
     for i, j in enumerate(x):
-        score += P.D[i, j]
-        unary_score += P.D[i, j]
+        Dij = P.D[i, j]
+        score += Dij
+        unary_score += Dij
         if use_binary:
+            B_part = P.B.get(j)
             for k in P.adj_list[i]:
                 l = x[k]
-                if P.B[j, l]:
-                    score -= P.B[j, l] * P.g / 2.0
-                    binary_score -= P.B[j, l] * P.g / 2.0
+                if not P.self_discount and (i == j or k == l):
+                    continue
+                Bjl = P.B.get_j(B_part, l)
+                if Bjl:
+                    score -= Bjl * P.g / 2.0
+                    binary_score -= Bjl * P.g / 2.0
     """
     # An alternative way of computing the quadratic term
     if use_binary:
         for i,j,k,l in P.squares:
             if x[i] == j and x[k] == l:
-                score -= P.B[j,l] * P.g / 2.0
-                binary_score -= P.B[j,l] * P.g / 2.0
+                score -= P.B.get(j,l) * P.g / 2.0
+                binary_score -= P.B.get(j,l) * P.g / 2.0
     """
     #print "F:   {} opened entities, {} unary, {} binary, score {} (took {} " +\
     #      "seconds).".format(n_opened, unary_score, binary_score, score,
@@ -290,15 +299,18 @@ def compute_infeasible_score(P, x, w, u_x, u_w, use_binary=True):
     binary_score2 = 0
     for i, xi in enumerate(x):
         for j in xi:
-            score += P.D[i, j]
-            dscore += P.D[i, j] - u_x[i]
-            unary_score += P.D[i, j] - u_x[i]
+            Dij = P.D[i, j]
+            score += Dij
+            dscore += Dij - u_x[i]
+            unary_score += Dij - u_x[i]
             if use_binary:
+                B_part = P.B.get(j)
                 for _, _, k, l in w.iter_nonzero(ij=(i, j)):
-                    score -= P.B[j, l] * P.g / 2.0
-                    dscore += 2*u_w.get((i, j, k, l),0) - P.B[j, l] * P.g / 2.0
-                    binary_score += 2*u_w.get((i, j, k, l), 0) - P.B[j, l] * \
-                                                                 P.g / 2.0
+                    Bjl = P.B.get_j(B_part, l)
+                    score -= Bjl * P.g / 2.0
+                    u_ijkl = u_w.get((i, j, k, l), 0)
+                    dscore += 2 * u_ijkl - Bjl * P.g / 2.0
+                    binary_score += 2 * u_ijkl - Bjl * P.g / 2.0
     return score, dscore
 
 
@@ -312,7 +324,7 @@ def get_v_munkres(i, j, w, u_w, P):
     for _, _, k, l, _ in w.iter(fixed_ij=(i, j)):
         if k not in k_vals:
             k_vals[k] = len(k_vals)
-        val = 2 * u_w.get((i, j, k, l), 0) - P.B[j, l] * P.g / 2.0
+        val = 2 * u_w.get((i, j, k, l), 0) - P.B.get(j, l) * P.g / 2.0
         if val < min_val:
             min_val = val
         if val < 0:
@@ -330,7 +342,7 @@ def get_v_munkres(i, j, w, u_w, P):
     k_inv_vals = {val: key for key, val in k_vals.iteritems()}
     l_inv_vals = {val: key for key, val in l_vals.iteritems()}
     # Run Munkres algorithm
-    row_ind, col_ind = linear_sum_assignment(assignment_costs)
+    row_ind, col_ind = min_cost_matching(assignment_costs)
     assignments = zip(row_ind, col_ind)
 
     v = 0

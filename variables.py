@@ -4,6 +4,7 @@ Class W: implementation of the linearized quadratic term w
 """
 import numpy as np
 from scipy import sparse
+import copy
 
 
 class Problem:
@@ -21,8 +22,8 @@ class Problem:
             N -- Total number of items in all input graphs.
             A -- Overall adjacency matrix (sparse block matrix containing all
                  input graphs).
-            candidate_matches -- Dict with items as keys and candidate match
-                                 lists as values.
+            candidate_matches -- List with items as indices and lists of
+                                 candidate match items as values.
             g2n -- Graph-to-item dict.
             gt -- Groundtruth solution
             B -- Underlying entity graph (if None, then B = A).
@@ -35,21 +36,21 @@ class Problem:
         self.g = g
         self.gap_cost = gap_cost
         self.N = N
-        self.A = A
-        self.AA = None
+        self.A = AdjacencyMatrix(A)
+        #self.AA = None
         self.adj_list = self.construct_adjacency_lists()
         if B is not None:
-            self.B = B
+            self.B = AdjacencyMatrix(B)
         else:
-            self.B = A.copy()
+            self.B = self.A.copy()
         self.candidate_matches = candidate_matches
         self.self_discount = self_discount
         # {item A: set of other items that could be matched to A}
         # (might be = candidate_matches)
         self.candidates_to_match = self.construct_from_matches()
         self.groundtruth = gt
-        self.init_w()
-        #self.init_diff_w(self.A)
+        self.squares = self.init_w()
+        #self.squares = self.init_diff_w(self.A)
         self.graph2nodes = g2n
         self.node2graph = {}
         for graph, nodes in self.graph2nodes.iteritems():
@@ -62,10 +63,7 @@ class Problem:
         adj_list = []
         print "N", self.N
         for i in range(self.N):
-            if sparse.issparse(self.A):
-                neighs = list(self.A[i].nonzero()[1])
-            else:
-                neighs = list(np.nonzero(self.A[i])[0])
+            neighs = self.A.get(i).keys()
             adj_list.append(neighs)
         return adj_list
 
@@ -82,33 +80,37 @@ class Problem:
         corresponding to the w variables.
         """
         n_w = 0
-        self.squares = [] # (i,j,k,l)
+        squares = [] # (i,j,k,l)
         for i, i_neighs in enumerate(self.adj_list):
             for j in self.candidate_matches[i]:
                 if not self.self_discount and j == i:
                     continue
                 for k in i_neighs:
                     for l in self.candidate_matches[k]:
+                        # TODO Check if this comparison should really be here
                         if not self.self_discount and l == k:
                             continue
-                        if self.B[j, l] > 0:
-                            self.squares.append((i, j, k, l))
+                        if self.B.get(j, l) > 0:
+                            squares.append((i, j, k, l))
                             n_w += 1
         print "{} w's.".format(n_w)
+        return squares
 
     def init_diff_w(self, B):
         n_w = 0
-        self.squares = [] # (i,j,k,l)
+        squares = [] # (i,j,k,l)
         for i, i_matches in enumerate(self.candidate_matches):
             for k, k_matches in enumerate(self.candidate_matches):
                 for j in i_matches:
                     for l in k_matches:
-                        diff = (self.A[i, k] - B[j, l])**2
+                        diff = (self.A.get(i, k) - B.get(j, l))**2
                         if diff > 0:
-                            self.squares.append((i, j, k, l))#,diff))
+                            squares.append((i, j, k, l))#,diff))
                             n_w += 1
         print "{} diff w's.".format(n_w)
+        return squares
 
+    '''
     def construct_AA(self, x_start_idxs, cm_dicts, xlen):
         """
         Construct A "Kronecker product" A matrix for a given blocking
@@ -140,6 +142,7 @@ class Problem:
             self.AA = sparse.csr_matrix((np.ones(len(col_ind)),
                                          (row_ind, col_ind)),
                                         shape=(xlen, xlen), dtype=np.int32)
+    '''
 
 
 class W:
@@ -221,3 +224,53 @@ class W:
         for i, j, k, l, val in self.iter(ij, k):
             if val == 1:
                 yield i, j, k, l
+
+
+class AdjacencyMatrix:
+    """
+    Adjacency matrix A and B. Implemented as dict of dicts for an improved
+    performance over using sparse matrices.
+    """
+
+    def __init__(self, A, do_copy=False):
+
+        if isinstance(A, AdjacencyMatrix):
+            if do_copy:
+                self.dict = copy.deepcopy(A.dict)
+            else:
+                self.dict = A.dict
+        elif sparse.issparse(A):
+            self.dict = {}
+            cx = A.tocoo()
+            for i, j, val in zip(cx.row, cx.col, cx.data):
+                if i not in self.dict:
+                    self.dict[i] = {}
+                self.dict[i][j] = val
+        else:
+            assert False, "AdjacencyMatrix can only be initialized with " + \
+                          "a sparse matrix or another AdjacencyMatrix"
+        self.shape = A.shape
+
+    def get(self, i, j=None):
+        if j is not None:
+            return self.dict.get(i, {}).get(j, 0)
+        else:
+            return self.dict.get(i, {})
+
+    def set(self, i, j, val=1):
+        if i not in self.dict:
+            self.dict[i] = {}
+        if j not in self.dict[i]:
+            self.dict[i][j] = val
+
+    @staticmethod
+    def get_j(ipart, j):
+        return ipart.get(j, 0)
+
+    def iter(self):
+        for i, jdict in self.dict.iteritems():
+            for j, val in jdict.iteritems():
+                yield i, j, val
+
+    def copy(self):
+        return AdjacencyMatrix(self, do_copy=True)

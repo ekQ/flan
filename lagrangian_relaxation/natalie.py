@@ -3,7 +3,7 @@ Natalie modified to support multiple network alignment.
 """
 import numpy as np
 import time
-from scipy.optimize import linear_sum_assignment
+from min_cost_matching import min_cost_matching
 import variables
 import networkx as nx
 
@@ -11,18 +11,23 @@ print_interval = 50
 #print_interval = 1
 
 
-def klaus_algorithm(P, max_iterations=500, use_binary=True, cluster=True):
+def klaus_algorithm(P, max_iterations=500, use_binary=True, cluster=True,
+                    u_w=None):
     for i in range(P.N):
         P.D[i, i] = P.gap_cost
-    results = align_graphs(P, max_iterations, use_binary, cluster)
+    results = align_graphs(P, max_iterations, use_binary, cluster, u_w)
     return results
 
 
-def align_graphs(P, max_iterations, use_binary, cluster):
-    u_w = {}
+def align_graphs(P, max_iterations, use_binary, cluster, u_w=None):
+    if u_w is None:
+        u_w = {}
     l = -np.inf
     u = np.inf
     best_x = None
+    best_x_iter = -1
+    best_x_cands = None
+    best_u_w = None
     theta = 0.1
     sg_N = 20
     sg_M = 10
@@ -33,7 +38,7 @@ def align_graphs(P, max_iterations, use_binary, cluster):
     prev_duality_gap = np.inf
     n_equal_gaps = 0
     for t in range(0, max_iterations):
-        has_converged, x, w, Zd_score, feasible_score, u_w = \
+        has_converged, x, w, Zd_score, feasible_score, u_w, x_cands = \
                 LD_iteration(P, u_w, theta, use_binary=use_binary)
         Zd_scores.append(Zd_score)
         feasible_scores.append(feasible_score)
@@ -61,9 +66,12 @@ def align_graphs(P, max_iterations, use_binary, cluster):
         if Zd_score > l:
             l = Zd_score
             improved = True
+            best_x_cands = x_cands
+            best_u_w = u_w.copy()
         if feasible_score < u:
             u = feasible_score
             best_x = x
+            best_x_iter = t
             improved = True
         if improved:
             m -= 1
@@ -85,13 +93,14 @@ def align_graphs(P, max_iterations, use_binary, cluster):
         if has_converged:
             print "*** Iteration converged in {} steps! ***".format(t+1)
             break
-    print "Best feasible score {}, lb: {}, ub: {}".format(u, l, u)
+    print "Best feasible score {}, lb: {}, ub: {}, ub-iter: {}".format(
+        u, l, u, best_x_iter)
     #print "Best x: {}".format(best_x)
     if cluster:
         best_x = cluster_x(best_x, P.candidate_matches)
     results = {'best_x': best_x, 'Zd_scores': Zd_scores,
                'feasible_scores': feasible_scores, 'iterations': t+1, 'lb': l,
-               'ub': u}
+               'ub': u, 'best_x_cands': best_x_cands, 'best_u_w': best_u_w}
     return results
 
 
@@ -130,7 +139,7 @@ def LD_iteration(P, u_w, theta, use_binary=True):
     Output:
         Optimal solution (x,y,w) and Lagrange multipliers
     """
-    x, w = solve_xw(P, u_w, use_binary=use_binary)
+    x, w, x_cands = solve_xw(P, u_w, use_binary=use_binary)
     feasible_score = compute_score(P, x, use_binary=use_binary)
     Zd_score = compute_infeasible_score(P, x, w, u_w, use_binary=use_binary)
     # Duality gap
@@ -143,8 +152,8 @@ def LD_iteration(P, u_w, theta, use_binary=True):
     for i, j, k, l, val in w.iter():
         sg.append(val - w.get(k, l, i, j))
     sg_norm = np.linalg.norm(sg, 2) ** 2
-    if sg_norm == 0:    # Converged
-        return True, x, w, Zd_score, feasible_score, u_w
+    if sg_norm < 1e-5:  # Converged
+        return True, x, w, Zd_score, feasible_score, u_w, x_cands
 
     # Update Lagrange multipliers
     for i, j, k, l, val in w.iter():
@@ -153,7 +162,7 @@ def LD_iteration(P, u_w, theta, use_binary=True):
         sg = val - w.get(k, l, i, j)
         if sg_norm > 0:
             u_w[(i, j, k, l)] += theta * score_diff / sg_norm * sg
-    return False, x, w, Zd_score, feasible_score, u_w
+    return False, x, w, Zd_score, feasible_score, u_w, x_cands
 
 
 def compute_score(P, x, use_binary=True):
@@ -162,14 +171,21 @@ def compute_score(P, x, use_binary=True):
     unary_score = 0
     binary_score = 0
     for i, j in enumerate(x):
-        score += P.D[i,j]
-        unary_score += P.D[i,j]
+        Dij = P.D[i, j]
+        score += Dij
+        unary_score += Dij
+        B_part = P.B.get(j)
         if use_binary:
             for k in P.adj_list[i]:
                 l = x[k]
-                if P.B[j,l]:
-                    score -= P.B[j,l] * P.g / 2.0
-                    binary_score -= P.B[j,l] * P.g / 2.0
+                if not P.self_discount and (i == j or k == l):
+                    continue
+                # We could also call just P.B.get(j, l), but this is
+                # slightly faster
+                Bjl = P.B.get_j(B_part, l)
+                if Bjl:
+                    score -= Bjl * P.g / 2.0
+                    binary_score -= Bjl * P.g / 2.0
     """
     if use_binary:
         for i,j,k,l in P.squares:
@@ -188,17 +204,20 @@ def compute_infeasible_score(P, x, w, u_w, use_binary=True):
     unary_score = 0
     binary_score = 0
     for i, j in enumerate(x):
-        dscore += P.D[i, j]
-        unary_score += P.D[i, j]
+        Dij = P.D[i, j]
+        dscore += Dij
+        unary_score += Dij
     if use_binary:
         for (i, j) in w.w.iterkeys():
+            B_part = P.B.get(j)
             for k, ls in w.w[(i, j)].iteritems():
                 for l in ls.iterkeys():
                     if w.get(i, j, k, l):
-                        dscore += 2*u_w.get((i, j, k, l), 0) - \
-                                  P.B[j, l] * P.g / 2.0
-                        binary_score += 2*u_w.get((i, j, k, l), 0) - \
-                                        P.B[j, l] * P.g / 2.0
+                        #Bjl = P.B.get(j, l)
+                        Bjl = P.B.get_j(B_part, l)
+                        u_ijkl = u_w.get((i, j, k, l), 0)
+                        dscore += 2 * u_ijkl - Bjl * P.g / 2.0
+                        binary_score += 2 * u_ijkl - Bjl * P.g / 2.0
     #print " Dual unary: {}, binary: {}".format(unary_score, binary_score)
     return dscore
 
@@ -214,7 +233,7 @@ def get_v_munkres(i, j, w, u_w, P):
     for _, _, k, l, _ in w.iter(fixed_ij=(i, j)):
         if k not in k_vals:
             k_vals[k] = len(k_vals)
-        val = 2 * u_w.get((i, j, k, l), 0) - P.B[j, l] * P.g / 2.0
+        val = 2 * u_w.get((i, j, k, l), 0) - P.B.get(j, l) * P.g / 2.0
         if val < min_val:
             min_val = val
         if val < 0:
@@ -223,20 +242,44 @@ def get_v_munkres(i, j, w, u_w, P):
             kl_costs[(k, l)] = val
     cost_infeasible = 10000000000
     assignment_costs = np.ones((len(k_vals), len(l_vals))) * cost_infeasible
-    for (k,l), val in kl_costs.iteritems():
+    for (k, l), val in kl_costs.iteritems():
         assignment_costs[k_vals[k], l_vals[l]] = val - min_val + 1
     k_inv_vals = {val: key for key, val in k_vals.iteritems()}
     l_inv_vals = {val: key for key, val in l_vals.iteritems()}
     # Run Munkres algorithm
-    row_ind, col_ind = linear_sum_assignment(assignment_costs)
+    row_ind, col_ind = min_cost_matching(assignment_costs)
     assignments = zip(row_ind, col_ind)
 
     for ki, li in assignments:
         k = k_inv_vals[ki]
         l = l_inv_vals[li]
-        val = assignment_costs[ki, li] + min_val -1
+        val = assignment_costs[ki, li] + min_val - 1
         if val < 0:
             v += val
+            w.set(i, j, k, l)
+    return v
+
+
+def get_v_greedy(i, j, w, u_w, P):
+    """
+    Ignore the one-to-one constraint and simply match every node to the best
+    matching entity (multiple nodes from one graph might get mapped to the same
+    entity).
+    """
+    if (i, j) not in w.w:
+        return 0
+    v = 0
+    matches = {}
+    for _, _, k, l, _ in w.iter(fixed_ij=(i, j)):
+        if k not in matches:
+            matches[k] = (0, None)
+        val = 2 * u_w.get((i, j, k, l), 0) - P.B.get(j, l) * P.g / 2.0
+        if val < matches[k][0]:
+            matches[k] = (val, l)
+
+    for k, (cost, l) in matches.iteritems():
+        if cost < 0 and l is not None:
+            v += cost
             w.set(i, j, k, l)
     return v
 
@@ -247,7 +290,7 @@ def multi_match_x(P, x_candidates):
 
     Input:
         P -- Problem instance.
-        x_candidates -- list of candidate tuple list: 
+        x_candidates -- list of candidate tuple list:
                         item -> candidate idx -> (score, j)
     """
     # Initially assign each item to the first candidate match
@@ -298,7 +341,7 @@ def multi_match_x(P, x_candidates):
         i_inv_vals = {val: key for key, val in i_vals.iteritems()}
         j_inv_vals = {val: key for key, val in j_vals.iteritems()}
         # Run Munkres algorithm
-        row_ind, col_ind = linear_sum_assignment(assignment_costs)
+        row_ind, col_ind = min_cost_matching(assignment_costs)
         assignments = zip(row_ind, col_ind)
 
         for i_val, j_val in assignments:
@@ -310,7 +353,28 @@ def multi_match_x(P, x_candidates):
     return x
 
 
-def solve_xw(P, u_w, use_binary=True):
+def greedy_x(P, x_candidates):
+    """
+    Assign each item to a candidate item greedily.
+
+    Input:
+        P -- Problem instance.
+        x_candidates -- list of candidate tuple list:
+                        item -> candidate idx -> (score, j)
+    """
+    x = []
+    for cands in x_candidates:
+        min_cost = np.inf
+        min_j = None
+        for cost, j in cands:
+            if cost < min_cost:
+                min_cost = cost
+                min_j = j
+        x.append(min_j)
+    return x
+
+
+def solve_xw(P, u_w, use_binary=True, greedy=False):
     w = variables.W(P)
     # x's and their match-score pairs
     x_candidates = []
@@ -324,7 +388,11 @@ def solve_xw(P, u_w, use_binary=True):
         v_part = 0
         for j in j_vals:
             if use_binary:
-                v_ij = get_v_munkres(i, j, w, u_w, P)
+                if not greedy:
+                    v_ij = get_v_munkres(i, j, w, u_w, P)
+                else:
+                    #v_ij = get_v_munkres(i, j, w, u_w, P)
+                    v_ij = get_v_greedy(i, j, w, u_w, P)
             else:
                 v_ij = 0
             v_part += v_ij
@@ -334,7 +402,11 @@ def solve_xw(P, u_w, use_binary=True):
             if x_score < min_x_score:
                 min_x_score = x_score
         x_candidates.append(fx_i)
-    x = multi_match_x(P, x_candidates)
+    if not greedy:
+        x = multi_match_x(P, x_candidates)
+    else:
+        #x = multi_match_x(P, x_candidates)
+        x = greedy_x(P, x_candidates)
     # Update w (w_ijkl should be 0 if x_ij is zero)
     new_w = variables.W(P)
     for i, j in enumerate(x):
@@ -344,4 +416,4 @@ def solve_xw(P, u_w, use_binary=True):
                 if w.get(i, j, k, l):
                     new_w.set(i, j, k, l)
     w = new_w
-    return x, w
+    return x, w, x_candidates

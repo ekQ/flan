@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import time
 import datetime as dt
 import sys
-from plot_experiment_results import plot_toy_experiment_results
 import utilities as util
 
 
@@ -94,7 +93,7 @@ def full_n_graphs(n_reps=3, full=False):
                         title=full_str + '_n_graphs')
 
 
-def f_effect(n_reps=10):
+def f_effect(n_reps=10, dir_id=1000, job_id=0):
     """
     Test varying parameter f.
     """
@@ -113,11 +112,36 @@ def f_effect(n_reps=10):
     varied_param = 'f'
     p[varied_param] = list(np.arange(0.05, 0.61, 0.05)) + \
                       [0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.5]
-    methods = ['ICM', 'progmKlau', 'upProgmKlau', 'mKlau', 'LD', 'LD5',
-               'meLD5_75', 'meLD5_100', 'meLD5_125']
+    methods = ['ICM', 'progmKlau', 'upProgmKlau', 'mKlau', 'LD', 'binB-LD5',
+               'meLD5_75', 'meLD5_100', 'meLD5_125', 'isorankn', 'LD5']
+    e_seed = np.random.randint(0, 1000000) + int(job_id)
+    experiment_template(n_reps, p, varied_param, cv=False, methods=methods,
+                        title='f_effect{}'.format(job_id), e_seed=e_seed,
+                        dir_id=dir_id)
+
+
+def isorankn_experiment(n_reps=10):
+    """
+    Test varying parameter f.
+    """
+    p = {}
+    p['n_input_graphs'] = 10
+    p['duplicates'] = 3
+    p['density_multiplier'] = 1.1
+    p['p_keep_edge'] = 0.8
+    p['g'] = 0.5
+    p['f'] = 0.4
+    p['gap_cost'] = p['f']
+    p['n_entities'] = 100
+    p['n_input_graph_nodes'] = 30
+    p['max_iters'] = 300
+
+    varied_param = 'f'
+    p[varied_param] = [0.3, 0.6, 0.9]
+    methods = ['isorankn']
 
     experiment_template(n_reps, p, varied_param, cv=False, methods=methods,
-                        title='f_effect')
+                        title='f_effect_isorankn')
 
 
 def max_entities_effect(n_reps=10, e_seed=None):
@@ -192,7 +216,7 @@ def vary_add_noise(n_reps=10):
 def experiment_template(
         n_reps, params, varied_param, cv=False,
         methods=('ICM', 'progmKlau', 'upProgmKlau', 'mKlau', 'LD', 'LD5'),
-        title='generic', e_seed=None):
+        title='generic', e_seed=None, dir_id=1000):
     """
     General template for performing experiments.
     
@@ -269,11 +293,14 @@ def experiment_template(
                     mai = int(method[7:])
                     method = 'binB-LD'
                 elif method.startswith('meLD'):
+                    if i > 0:
+                        # No need to compute fixed entity method for different f values.
+                        continue
                     parts = method.split('_')
                     if len(parts[0]) > 4:
                         mai = int(parts[0][4:])
                     max_entities = int(parts[1])
-                    method = 'LD'
+                    method = 'binB-LD'
                 t0 = time.time()
                 pr, rec, f1, o = single_cer(
                     p['f'], p['g'], p['gap_cost'], seed, method,
@@ -293,8 +320,8 @@ def experiment_template(
     print "\nThe whole experiment took {:2f} seconds.".format(time.time() -
                                                               t_beg)
 
-    fname = util.save_data(locals(), "synthetic_" + title)
-    plot_toy_experiment_results(fname)
+    fname = util.save_data(locals(), "synthetic_" + title, dir_name='multiplex{}'.format(str(dir_id)))
+    #plot_toy_experiment_results(fname)
 
     print "F1 score:", np.mean(res_fscore, axis=2)
     print "Precision:", np.mean(res_precision, axis=2)
@@ -305,6 +332,40 @@ def experiment_template(
     print "Costs:", np.mean(res_costs, axis=2)
     print "Lower bounds:", np.mean(res_lb, axis=2)
     print "Upper bounds:", np.mean(res_ub, axis=2)
+
+
+def test_reps(n_reps=5, f=None):
+    if f is None:
+        if len(sys.argv) > 1:
+            f = float(sys.argv[1])
+        else:
+            f = 0.4
+    if len(sys.argv) > 2:
+        max_entities = int(sys.argv[2])
+    else:
+        max_entities = None
+    g = 0.5
+    gap_cost = f
+    mai = 1
+    method = 'binB-LD'
+    method = 'LD'
+    #method = 'mKlau'
+    #method = 'upProgmKlau'
+    #method = 'progmKlau'
+    method = 'isorankn'
+    #method = 'rand'
+    res = []
+    for r in range(n_reps):
+        seed = np.random.randint(0, 1000000)
+        #seed = 45398
+        pr, re, f1, o1 = single_cer(
+            f, g=g, gap_cost=gap_cost, seed=seed, method=method,
+            n_input_graphs=10, n_duplicates=3, p_keep_edge=0.8,
+            density_multiplier=1.1, n_entities=100, n_input_graph_nodes=30,
+            max_iters=300, max_algorithm_iterations=mai, shuffle=True,
+            max_entities=max_entities)
+        res.append(f1)
+    print "\nAvg perf:", np.mean(res)
 
 
 def test_single(f=None, do_plot=False, do_save=False, title=""):
@@ -324,13 +385,16 @@ def test_single(f=None, do_plot=False, do_save=False, title=""):
     method = 'LD'
     #method = 'mKlau'
     #method = 'upProgmKlau'
-    #method = 'progmKlau'
+    method = 'progmKlau'
+    #method = 'isorankn'
+    #method = 'rand'
     seed = np.random.randint(0, 1000000)
+    seed = 45398
     pr, re, f1, o1 = single_cer(
         f, g=g, gap_cost=gap_cost, seed=seed, method=method,
-        n_input_graphs=10, n_duplicates=3, p_keep_edge=0.8,
-        density_multiplier=1.1, n_entities=100, n_input_graph_nodes=30,
-        max_iters=300, max_algorithm_iterations=mai, shuffle=True,
+        n_input_graphs=2, n_duplicates=30, p_keep_edge=0.8,
+        density_multiplier=1.1, n_entities=50, n_input_graph_nodes=50,
+        max_iters=300, max_algorithm_iterations=mai, shuffle=False,
         max_entities=max_entities)
 
     if do_save:
@@ -342,6 +406,15 @@ def test_single(f=None, do_plot=False, do_save=False, title=""):
         plt.show()
 
 if __name__ == "__main__":
-    test_single(f=0.2, do_plot=True, do_save=True, title="f0.2")
-    test_single(f=1.2, do_plot=True, do_save=True, title="f1.2")
-    f_effect(10)
+    #test_single(f=0.2, do_plot=True, do_save=True, title="f0.2")
+    #test_single(f=1.2, do_plot=True, do_save=True, title="f1.2")
+
+    if len(sys.argv) > 1:
+        dir_id = sys.argv[1]
+    else:
+        dir_id = 0
+    if len(sys.argv) > 2:
+        job_id = sys.argv[2]
+    else:
+        job_id = 0
+    f_effect(n_reps=1, dir_id=dir_id, job_id=job_id)

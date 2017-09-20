@@ -6,7 +6,7 @@ Requires: SciPy v0.17 or newer.
 
 import numpy as np
 import random
-from scipy.optimize import linear_sum_assignment
+from min_cost_matching import min_cost_matching
 
 
 def make_feasible_munkres(x_candidates, y_scores, P):
@@ -71,6 +71,8 @@ def make_feasible_munkres(x_candidates, y_scores, P):
             i_val = i_vals[i]
             xi_candidates = x_candidates[i]
             for score, j in xi_candidates:
+                if j in used_entities:
+                    continue
                 y_score = y_scores2[j]
                 if y_score < 0:
                     # We should assign to an entity with negative y_score if
@@ -80,7 +82,7 @@ def make_feasible_munkres(x_candidates, y_scores, P):
         i_inv_vals = {val: key for key, val in i_vals.iteritems()}
         j_inv_vals = {val: key for key, val in j_vals.iteritems()}
         # Run Munkres algorithm
-        row_ind, col_ind = linear_sum_assignment(assignment_costs)
+        row_ind, col_ind = min_cost_matching(assignment_costs)
         assignments = zip(row_ind, col_ind)
 
         for i_val, j_val in assignments:
@@ -168,7 +170,7 @@ def make_feasible_munkres_me(x_candidates, y, y_scores, P):
         i_inv_vals = {val: key for key, val in i_vals.iteritems()}
         j_inv_vals = {val: key for key, val in j_vals.iteritems()}
         # Run Munkres algorithm
-        row_ind, col_ind = linear_sum_assignment(assignment_costs)
+        row_ind, col_ind = min_cost_matching(assignment_costs)
         assignments = zip(row_ind, col_ind)
 
         for i_val, j_val in assignments:
@@ -242,10 +244,11 @@ def open_max_entities(P, y_scores, x_candidates):
             print opened_y
             break
     min_opened = len(opened_y)
-    if min_opened > P.max_entities:
-        print "Had to open {} although the maximum was set to {}.".format(
-            min_opened, P.max_entities
-        )
+    #if min_opened > P.max_entities:
+    #    print "Had to open {} although the maximum was set to {}.".format(
+    #        min_opened, P.max_entities
+    #    )
+
     # Open additional y's if max_entities not reached yet
     y_tuples = sorted([(score, yi) for yi, score in enumerate(y_scores)])
     if min_opened < P.max_entities:

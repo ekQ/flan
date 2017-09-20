@@ -8,11 +8,12 @@ import matplotlib.pyplot as plt
 
 
 def generate_graphs(N, n_subgraphs, n_subgraph_nodes, p_keep_edge=1,
-                    density_multiplier=1, n_duplicate_names=5):
+                    density_multiplier=1, n_duplicate_names=5,
+                    force_connectivity=False):
     assert n_subgraph_nodes <= N, "Subgraphs cannot be larger than the " + \
                                   "underlying graph"
     # Generate the underlying graph
-    G = nx.barabasi_albert_graph(N,2)
+    G = nx.barabasi_albert_graph(N, 2)
     n_uniq_names = int(np.ceil(N / float(n_duplicate_names)))
     name_pool = []
     for i in range(n_uniq_names):
@@ -28,22 +29,32 @@ def generate_graphs(N, n_subgraphs, n_subgraph_nodes, p_keep_edge=1,
     assert density_multiplier >= 1, "Density multiplier must be at least 1."
     p_add_edge = base_density * (density_multiplier - 1)
 
-    sGs = [] # Subgraphs
+    sGs = []    # Subgraphs
     for i in range(n_subgraphs):
         sG = nx.Graph()
         unexplored = [random.choice(G.nodes())]
         while len(sG) < n_subgraph_nodes and len(unexplored) > 0:
             next_node = random.choice(unexplored)
             sG.add_node(next_node, name=G.node[next_node]['name'],
-                        entity=next_node, subgraph=i)
+                        entity=next_node, subgraph=i, id=next_node)
             neighs = G.neighbors(next_node)
-            for neigh in neighs:
-                if not sG.has_node(neigh):
-                    if neigh not in unexplored:
-                        unexplored.append(neigh)
-                elif random.random() < p_keep_edge:
-                    # Add neighbor
-                    sG.add_edge(next_node, neigh)
+            if not force_connectivity:
+                for neigh in neighs:
+                    if not sG.has_node(neigh):
+                        if neigh not in unexplored:
+                            unexplored.append(neigh)
+                    elif random.random() < p_keep_edge:
+                        # Add neighbor
+                        sG.add_edge(next_node, neigh)
+            else:
+                random.shuffle(neighs)
+                for ni, neigh in enumerate(neighs):
+                    if not sG.has_node(neigh):
+                        if neigh not in unexplored:
+                            unexplored.append(neigh)
+                    elif random.random() < p_keep_edge or sG.degree(next_node) == 0:
+                        # Add neighbor
+                        sG.add_edge(next_node, neigh)
             unexplored.remove(next_node)
         density0 = nx.density(sG)
         # Add edges to the subgraph

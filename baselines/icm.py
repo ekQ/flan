@@ -9,7 +9,7 @@ def ICM(asg, similarities, P, max_iters):
     # Do some magic...
     changed = True
     iteration = 0
-    min_cost = util.cost(asg, P)
+    min_cost = 1e20
     while changed and iteration < max_iters:
         print "Iteration %d. Min cost: %.5f" % (iteration+1, min_cost)
         changed = False

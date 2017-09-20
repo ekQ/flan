@@ -8,9 +8,12 @@ import datetime as dt
 import os
 import numpy as np
 import align_multiple_networks as amn
+import utilities as util
 import cPickle as pickle
 import networkx as nx
 import re
+import sys
+import argparse
 from family_trees import extract_tree_fragment_dataset as extract_ft
 
 
@@ -138,7 +141,7 @@ def merge_multiple(people_index_tuples, year_window, top_k_matches=5,
 
     if method.startswith('meLD'):
         max_entities = uniq_people
-        method = 'LD5'
+        method = 'binB-LD5'
     else:
         max_entities = None
     similarity_tuples = []
@@ -174,7 +177,7 @@ def merge_multiple(people_index_tuples, year_window, top_k_matches=5,
         xref2idx = {people[idx].xref: idx for idx in range(len(people))}
         G = nx.Graph()
         for i, p in enumerate(people):
-            G.add_node(i, entity=p.xref)
+            G.add_node(i, entity=p.xref, id=i, subgraph=len(Gs))
             neighs = [p.dad, p.mom]
             is_dads = [True, False]
             for neigh, is_dad in zip(neighs, is_dads):
@@ -199,6 +202,12 @@ def merge_multiple(people_index_tuples, year_window, top_k_matches=5,
         method = 'binB-LD'
     else:
         mai = 1
+
+    #import utilities as util
+    #util.write_problem_to_file(Gs, similarity_tuples,
+    #                           "family_trees/temp_edges.txt",
+    #                           "family_trees/temp_simtups.txt")
+
     x, other = amn.align_multiple_networks(
             Gs, cost_params, similarity_tuples, method=method, max_iters=300,
             max_algorithm_iterations=mai, max_entities=max_entities,
@@ -233,7 +242,9 @@ def count_unique_people(tree_files):
 
 def experiment_multiple_trees(n_reps=1, n_trees=5, n_people=500,
                               methods=('unary', 'LD', 'mKlau'),
-                              top_k_matches=5, f_vals=(0.1, 0.5, 1, 1.5, 2)):
+                              top_k_matches=5, f_vals=(0.1, 0.5, 1, 1.5, 2),
+                              title='genealogical', do_save=True, dir_id=None,
+                              rep_offset=0):
     nvv = len(f_vals)
     res_precision = np.zeros((len(methods), nvv, n_reps))
     res_recall = np.zeros((len(methods), nvv, n_reps))
@@ -248,14 +259,14 @@ def experiment_multiple_trees(n_reps=1, n_trees=5, n_people=500,
     start_date_part = str(dt.datetime.now())[:19]
     start_date_part = re.sub(' ', '_', start_date_part)
     start_date_part = re.sub(':', '', start_date_part)
-    fname0 = os.path.join("experiment_results", "genealogical_{}.pckl".format(
-        start_date_part))
+    fname0 = os.path.join("experiment_results", "{}_part_{}.pckl".format(
+        title, start_date_part))
 
-    for j in range(n_reps):
-        print "\n--- Repetition {}. ---".format(j+1)
+    for r in range(n_reps):
+        print "\n--- Repetition {}. ---".format(r+1)
         # Generate data
-        tree_files = extract_ft.get_k_fragments(n_trees, n_people,
-                                                label="first{}".format(j))
+        tree_files = extract_ft.get_k_fragments(
+                n_trees, n_people, label="first{}".format(r+rep_offset))
         people_index_tuples = []
         for tf in tree_files:
             people, people_dict = person.read_people(tf, clean=True)
@@ -265,32 +276,132 @@ def experiment_multiple_trees(n_reps=1, n_trees=5, n_people=500,
         uniq_people = count_unique_people(tree_files)
 
         for i, f in enumerate(f_vals):
-            print "\n  rep={}, f={}".format(j+1, f)
+            print "\n  rep={}, f={}".format(r+1, f)
             for mi, m in enumerate(methods):
-                print "\n    rep={}, f={}, method={}\n".format(j+1, f, m)
+                if m.startswith('meLD') and i > 0:
+                    # No need to compute fixed entity method for different f values.
+                    continue
+                print "\n    rep={}, f={}, method={}\n".format(r+1, f, m)
                 t0 = time.time()
                 precision, recall, fscore, n_clusters, lb, ub, iters = \
                     merge_multiple(people_index_tuples, 10, top_k_matches,
                                    method=m, uniq_people=uniq_people, f=f)
-                res_precision[mi, i, j] = precision
-                res_recall[mi, i, j] = recall
-                res_fscore[mi, i, j] = fscore
-                res_clusters[mi, i, j] = n_clusters
-                res_t[mi, i, j] = time.time() - t0
-                res_iterations[mi, i, j] = iters
-                res_lb[mi, i, j] = lb
-                res_ub[mi, i, j] = ub
-        pickle.dump(locals(), open(fname0, 'wb'))
-        print "Wrote the results of repetition {} to: {}\n".format(j+1, fname0)
+                res_precision[mi, i, r] = precision
+                res_recall[mi, i, r] = recall
+                res_fscore[mi, i, r] = fscore
+                res_clusters[mi, i, r] = n_clusters
+                res_t[mi, i, r] = time.time() - t0
+                res_iterations[mi, i, r] = iters
+                res_lb[mi, i, r] = lb
+                res_ub[mi, i, r] = ub
+        if do_save and n_reps > 1:
+            pickle.dump(locals(), open(fname0, 'wb'))
+            print "Wrote the results of repetition {} to: {}\n".format(r+1, fname0)
+
+    print "\nThe whole experiment took {:2f} seconds.".format(time.time()-t_beg)
+
+    if do_save:
+        fname = util.save_data(locals(), title, dir_name='genealogy{}'.format(
+            str(dir_id)))
+        print "Wrote the results to: {}".format(fname)
+
+    print "F1 score:", np.mean(res_fscore, axis=2)
+    print "Precision:", np.mean(res_precision, axis=2)
+    print "Recall:", np.mean(res_recall, axis=2)
+    print "Time:", np.mean(res_t, axis=2)
+    print "Clusters:", np.mean(res_clusters, axis=2)
+    print "Lower bounds:", np.mean(res_lb, axis=2)
+    print "Upper bounds:", np.mean(res_ub, axis=2)
+
+
+def experiment_scalability(n_reps=1, n_trees=5, n_people=500,
+                           varied_param='n_people', params=[50,100,500],
+                           methods=('unary', 'LD', 'mKlau'), top_k_matches=5,
+                           f=1.0, title='scalability', do_save=True,
+                           rep_offset=0, subfolder=''):
+    nvv = len(params)
+    res_precision = np.zeros((len(methods), nvv, n_reps))
+    res_recall = np.zeros((len(methods), nvv, n_reps))
+    res_fscore = np.zeros((len(methods), nvv, n_reps))
+    res_t = np.zeros((len(methods), nvv, n_reps))
+    res_iterations = np.zeros((len(methods), nvv, n_reps))
+    res_clusters = np.zeros((len(methods), nvv, n_reps))
+    res_lb = np.zeros((len(methods), nvv, n_reps))
+    res_ub = np.zeros((len(methods), nvv, n_reps))
+    t_beg = time.time()
+
+    start_date_part = str(dt.datetime.now())[:19]
+    start_date_part = re.sub(' ', '_', start_date_part)
+    start_date_part = re.sub(':', '', start_date_part)
+    dir_path = os.path.join("experiment_results", subfolder)
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
+    fname0 = os.path.join(dir_path, "{}_part_{}.pckl".format(
+        title, start_date_part))
+
+    for r in range(n_reps):
+        print "\n--- Repetition {}. ---".format(r+1)
+        for i, param_val in enumerate(params):
+            if varied_param == 'n_people':
+                n_people = param_val
+            elif varied_param == 'n_trees':
+                n_trees = param_val
+            else:
+                raise Exception('Invalid varied parameter: ' + varied_param)
+            # Generate data
+            try:
+                tree_files = extract_ft.get_k_fragments(
+                        n_trees, n_people, label="first{}".format(r+rep_offset))
+                people_index_tuples = []
+                for tf in tree_files:
+                    people, people_dict = person.read_people(tf, clean=True)
+                    #'family_trees/data/rand_frag_%d/' % i, clean=True)
+                    index = create_index(people)
+                    people_index_tuples.append((people, index, people_dict))
+                uniq_people = count_unique_people(tree_files)
+            except:
+                # If it fails, try generating new trees.
+                tree_files = extract_ft.get_k_fragments(
+                        n_trees, n_people, label="first{}".format(r+rep_offset),
+                        check_if_exists=False)
+                people_index_tuples = []
+                for tf in tree_files:
+                    people, people_dict = person.read_people(tf, clean=True)
+                    #'family_trees/data/rand_frag_%d/' % i, clean=True)
+                    index = create_index(people)
+                    people_index_tuples.append((people, index, people_dict))
+                uniq_people = count_unique_people(tree_files)
+
+            print "\n  rep={}, {}={}".format(r+1, varied_param, param_val)
+            for mi, m in enumerate(methods):
+                print "\n    rep={}, {}={}, method={}".format(r+1, varied_param,
+                                                              param_val, m)
+                t0 = time.time()
+                precision, recall, fscore, n_clusters, lb, ub, iters = \
+                    merge_multiple(people_index_tuples, 10, top_k_matches,
+                                   method=m, uniq_people=uniq_people, f=f)
+                res_precision[mi, i, r] = precision
+                res_recall[mi, i, r] = recall
+                res_fscore[mi, i, r] = fscore
+                res_clusters[mi, i, r] = n_clusters
+                res_t[mi, i, r] = time.time() - t0
+                res_iterations[mi, i, r] = iters
+                res_lb[mi, i, r] = lb
+                res_ub[mi, i, r] = ub
+        if do_save and n_reps > 1:
+            pickle.dump(locals(), open(fname0, 'wb'))
+            print "Wrote the results of repetition {} to: {}\n".format(r+1,
+                                                                       fname0)
 
     print "\nThe whole experiment took {:2f} seconds.".format(time.time()-t_beg)
     date_part = str(dt.datetime.now())[:19]
     date_part = re.sub(' ', '_', date_part)
     date_part = re.sub(':', '', date_part)
-    fname = os.path.join("experiment_results", "genealogical_{}.pckl".format(
-        date_part))
-    pickle.dump(locals(), open(fname, 'wb'))
-    print "Wrote the results to: {}\n".format(fname)
+    fname = os.path.join(dir_path, "{}_{}.pckl".format(
+        title, date_part))
+    if do_save:
+        pickle.dump(locals(), open(fname, 'wb'))
+        print "Wrote the results to: {}\n".format(fname)
 
     print "F1 score:", np.mean(res_fscore, axis=2)
     print "Precision:", np.mean(res_precision, axis=2)
@@ -302,8 +413,54 @@ def experiment_multiple_trees(n_reps=1, n_trees=5, n_people=500,
 
 
 if __name__ == "__main__":
-    methods = ['ICM', 'progmKlau', 'upProgmKlau', 'mKlau', 'LD', 'LD5', 'meLD',
-               'unary', 'unary++', 'upProgmKlau++']
-    f_vals = (0.1, 0.15, 0.2, 0.3, 0.5, 1, 1.5, 2, 3)
-    experiment_multiple_trees(n_reps=10, n_trees=10, n_people=100,
-                              methods=methods, top_k_matches=5, f_vals=f_vals)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-v", "--varied_param", default="people",
+                        choices=["people", "trees"], help=
+                        "Whether to vary people (default) or trees.")
+    parser.add_argument("-r", "--num_repetitions", type=int, default=5)
+    parser.add_argument("-f", "--rep_offset", type=int, default=0)
+    parser.add_argument("-l", "--title_label", default="", help=
+                        "A label to be included in the name of the output file.")
+    parser.add_argument("-s", "--subfolder", default="", help=
+                        "Optional subfolder name for storing experiment results.")
+    parser.add_argument('--small', action='store_true', default=False)
+    parser.add_argument("-d", "--dir_id", type=int, default=0)
+    args = parser.parse_args()
+
+    
+    methods = ['ICM', 'progmKlau', 'upProgmKlau', 'mKlau', 'LD', 'binB-LD5',
+               'meLD', 'unary', 'isorankn', 'LD5']
+    f_vals = (0.1, 0.15, 0.2, 0.3, 0.5, 1, 1.5, 2, 2.5, 3)
+    experiment_multiple_trees(n_reps=1, n_trees=10, n_people=100,
+                              methods=methods, top_k_matches=5, f_vals=f_vals,
+                              title='genealogy{}'.format(args.rep_offset),
+                              dir_id=args.dir_id, rep_offset=args.rep_offset)
+    '''
+    # USE THE FOLLOWING FOR THE SCALABILITY EXPERIMENT.
+    methods = ['LD', 'progmKlau', 'upProgmKlau', 'mKlau', 'LD', 'LD5', 'meLD',
+               'unary', 'isorankn']
+    if args.varied_param == "people":
+        if args.small:
+            param_vals = [50, 100]
+        else:
+            param_vals = [50, 100, 200, 400, 600, 800, 1000, 1200, 1400]
+        experiment_scalability(n_reps=args.num_repetitions, n_trees=4, n_people=None,
+                               varied_param='n_people',
+                               params=param_vals,
+                               methods=methods, top_k_matches=5, f=1.0,
+                               title='scalability_vary_people'+args.title_label,
+                               do_save=True, rep_offset=args.rep_offset,
+                               subfolder=args.subfolder)
+    else:
+        if args.small:
+            param_vals = [2, 5]
+        else:
+            param_vals = [2, 5, 10, 15, 20, 25, 30]
+        experiment_scalability(n_reps=args.num_repetitions, n_trees=None, n_people=100,
+                               varied_param='n_trees',
+                               params=param_vals,
+                               methods=methods, top_k_matches=5, f=1.0,
+                               title='scalability_vary_trees'+args.title_label,
+                               do_save=True, rep_offset=args.rep_offset,
+                               subfolder=args.subfolder)
+    '''

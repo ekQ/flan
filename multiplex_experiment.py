@@ -8,6 +8,7 @@ import time
 import datetime as dt
 import os
 import utilities as util
+import sys
 
 from align_multiple_networks import align_multiple_networks
 import plot_experiment_results as plot
@@ -58,8 +59,8 @@ def read_multiplex_data(fname, n_duplicate_names=3, max_nodes=40,
         G = nx.Graph()
         # Add nodes
         for pid in layer_ids:
-            G.add_node(pid, name=names[pid], entity=pid, subgraph=k-1)
-            Gent.add_node(pid, name=names[pid], entity=pid)
+            G.add_node(pid, name=names[pid], entity=pid, subgraph=k-1, id=pid)
+            Gent.add_node(pid, name=names[pid], entity=pid, id=pid)
         Gs.append(G)
     print "{} people on layers together (after subsampling).".format(
         len(all_layer_ids))
@@ -101,7 +102,8 @@ def compute_ids_per_layer(layers, E):
     print "Users in all layers:", len(id_set)
 
 
-def multiplex_experiment(n_reps=10):
+def multiplex_experiment(n_reps=10, title='multiplex', do_save=True,
+                         dir_id=None):
     """
     Run an experiment on alignining the (anonymized) layers of a multiplex
     graph.
@@ -112,19 +114,17 @@ def multiplex_experiment(n_reps=10):
         Prints some statistics and stores the results to a file.
     """
     shuffle = True
-    #methods = ['upProgmKlau']
-    methods = ('ICM', 'progmKlau', 'upProgmKlau', 'mKlau', 'LD', 'LD5',
-               'meLD5_61', 'meLD5_50', 'meLD5_70')
+    methods = ('ICM', 'progmKlau', 'upProgmKlau', 'mKlau', 'LD', 'binB-LD5',
+               'meLD5_50', 'meLD5_61', 'meLD5_70', 'isorankn', 'LD5')
     g = 0.5
     max_iters = 300
     duplicate_names = 3
-    f_values = [0.3, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5]
+    f_values = [0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5]
     nvv = len(f_values)
 
     fname = os.path.join('multiplex', 'CS-Aarhus_multiplex.edges')
 
     experiment_seed = np.random.randint(0, 1000000)
-    # experiment_seed = 48574 # Gt yields a better optimum
     print "--- Experiment seed: {} ---\n".format(experiment_seed)
     random.seed(experiment_seed)
     np.random.seed(experiment_seed)
@@ -158,11 +158,14 @@ def multiplex_experiment(n_reps=10):
                     mai = int(method[7:])
                     method = 'binB-LD'
                 elif method.startswith('meLD'):
+                    if i > 0:
+                        # No need to compute fixed entity method for different f values.
+                        continue
                     parts = method.split('_')
                     if len(parts[0]) > 4:
                         mai = int(parts[0][4:])
                     max_entities = int(parts[1])
-                    method = 'LD'
+                    method = 'binB-LD'
                 t0 = time.time()
                 x, o = align_multiple_networks(
                     Gs, cost_params, method=method, max_iters=max_iters,
@@ -181,12 +184,14 @@ def multiplex_experiment(n_reps=10):
                 res_costs[j, i, r] = o['cost']
                 res_lb[j, i, r] = o['lb']
                 res_ub[j, i, r] = o['ub']
-        fname0 = util.save_data(locals(), "multiplex", date0)
-        print "Wrote the results of repetition {} to: {}\n".format(r+1, fname0)
+        if do_save and n_reps > 1:
+            fname0 = util.save_data(locals(), "multiplex", date0)
+            print "Wrote the results of repetition {} to: {}\n".format(r+1, fname0)
     print "\nThe whole experiment took {:2f} seconds.".format(time.time() -
                                                               t_beg)
-    fname = util.save_data(locals(), "multiplex")
-    print "Wrote the results to: {}".format(fname)
+    if do_save:
+        fname = util.save_data(locals(), title, dir_name='multiplex{}'.format(str(dir_id)))
+        print "Wrote the results to: {}".format(fname)
     #plot_toy_experiment_results(fname)
 
     print "F1 score:", np.mean(res_fscore, axis=2)
@@ -215,13 +220,23 @@ def multiplex_single_test(method, n_duplicates=2):
 
 
 def main():
-    seed = np.random.randint(0, 1000000)
+    if len(sys.argv) > 1:
+        dir_id = sys.argv[1]
+    else:
+        dir_id = 0
+    if len(sys.argv) > 2:
+        job_id = sys.argv[2]
+    else:
+        job_id = 0
+
+    seed = np.random.randint(0, 1000000) + int(job_id)
 
     print "--- Seed: {} ---\n".format(seed)
     random.seed(seed)
     np.random.seed(seed)
 
-    multiplex_experiment(n_reps=30)
+    multiplex_experiment(n_reps=1, title='multiplex{}'.format(job_id),
+                         do_save=True, dir_id=dir_id)
 
 if __name__ == "__main__":
     main()

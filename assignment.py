@@ -123,9 +123,6 @@ class Assignment:
             self.candidate_matches_dicts[dst_clust] = new_cmd
         # Update matches
         self.update_all_matches(src_clust, dst_clust)
-        #for i, clust in enumerate(self.matches):
-        #    if clust == src_clust:
-        #        self.matches[i] = dst_clust
 
     def update_match(self, idx, dst_clust):
         """

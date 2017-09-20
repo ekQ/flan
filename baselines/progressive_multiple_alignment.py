@@ -10,7 +10,7 @@ import networkx as nx
 def progressive_multiple_alignment(
         Gs, cost_params, similarity_tuples, method, max_iters,
         max_algorithm_iterations, max_entities, shuffle, self_discount,
-        update_edges=False):
+        do_evaluate, update_edges=False):
     """
     Merge input graphs one graph at a time using any 2-network alignment method.
 
@@ -79,7 +79,8 @@ def progressive_multiple_alignment(
                                             sim))
         x, other = amn.align_multiple_networks(
             current_Gs, cost_params, temp_sim_tuples, method, max_iters,
-            max_algorithm_iterations, max_entities, shuffle, self_discount)
+            max_algorithm_iterations, max_entities, shuffle, self_discount,
+            do_evaluate)
         new_nodes = other['graph2nodes'][1]
         old_nodes = other['graph2nodes'][0]
         master_G = other['G']
