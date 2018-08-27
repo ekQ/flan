@@ -1,5 +1,4 @@
-matplotlib
-networkx
-numpy
-jellyfish>=0.5.0
-scipy>=0.17.0
+matplotlib==1.5.1
+networkx==1.11
+numpy==1.11.0
+scipy==0.17.0
