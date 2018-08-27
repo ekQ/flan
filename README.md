@@ -7,7 +7,11 @@ Malmi, E., Chawla, S., Gionis, A. "Lagrangian relaxations for multiple network a
 
 ## Testing
 
-To test your setup, run the following
+To test your setup, install the requirements (note that the latest version of networkx is not compatible with this package)
+    
+    pip install -r requirements.txt
+
+and run the following
 
     python align_multiple_networks.py toy_problem/edgefile toy_problem/similarityfile -m prognatalie++ -o toy_problem/output.txt
 
